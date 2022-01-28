@@ -3,6 +3,10 @@
 #include "icinga/host.hpp"
 #include <BoostTestTargetConfig.h>
 #include <iostream>
+#include <sstream>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 using namespace icinga;
 
@@ -807,6 +811,200 @@ BOOST_AUTO_TEST_CASE(service_flapping_ok_over_bad_into_ok)
 
 	c.disconnect();
 
+#endif /* I2_DEBUG */
+}
+
+class StateSequenceGenerator {
+public:
+	StateSequenceGenerator(size_t num, std::vector<ServiceState> availableStates)
+		: availableStates(std::move(availableStates)), progress(num), done(false) {}
+
+	std::vector<ServiceState> operator()() {
+		if (done) {
+			return {};
+		}
+
+		std::vector<ServiceState> result(progress.size());
+
+		for (size_t i = 0; i < progress.size(); i++) {
+			result[i] = availableStates[progress[i]];
+		}
+
+		bool overflow = true;
+		for (size_t i = 0; i < progress.size(); i++) {
+			if (++progress[i] < availableStates.size()) {
+				overflow = false;
+				break;
+			} else {
+				progress[i] = 0;
+			}
+		}
+		done = overflow;
+
+		return result;
+	}
+
+	explicit operator bool() const {
+		return !done;
+	}
+
+	void reset() {
+		std::fill(progress.begin(), progress.end(), 0);
+		done = false;
+	}
+
+private:
+	std::vector<ServiceState> availableStates;
+	std::vector<size_t> progress;
+	bool done;
+};
+
+BOOST_AUTO_TEST_CASE(suppressed_notification)
+{
+#ifndef I2_DEBUG
+	BOOST_WARN_MESSAGE(false, "This test can only be run in a debug build!");
+#else /* I2_DEBUG */
+
+	std::unordered_map<Checkable::Ptr, std::vector<std::pair<NotificationType, ServiceState>>> requestedNotifications;
+
+	auto c = Checkable::OnNotificationsRequested.connect([&requestedNotifications](
+		const Checkable::Ptr& checkable, NotificationType type,	const CheckResult::Ptr& cr,
+		const String&, const String&, const MessageOrigin::Ptr&
+	) {
+		std::cout << "  -> OnNotificationsRequested(" << Notification::NotificationTypeToString(type) << ", " << Service::StateToString(cr->GetState()) << ")" << std::endl;
+		requestedNotifications[checkable].emplace_back(type, cr->GetState());
+	});
+
+	auto assertNotifications = [&requestedNotifications](
+		const Checkable::Ptr& checkable,
+		const std::vector<std::pair<NotificationType, ServiceState>>& expected,
+		const std::string& extraMessage
+	) {
+		auto pretty = [](const std::vector<std::pair<NotificationType, ServiceState>>& vec) {
+			std::ostringstream s;
+
+			s << "{";
+			bool first = true;
+			for (const auto &v : vec) {
+				if (first) {
+					first = false;
+				} else {
+					s << ", ";
+				}
+				s << Notification::NotificationTypeToString(v.first)
+						  << "/" << Service::StateToString(v.second);
+			}
+			s << "}";
+
+			return s.str();
+		};
+
+		auto& got = requestedNotifications[checkable];
+		BOOST_CHECK_MESSAGE(got == expected, "expected=" << pretty(expected)
+			<< " got=" << pretty(got) << (extraMessage.empty() ? "" : " ") << extraMessage);
+
+		requestedNotifications.erase(checkable);
+	};
+
+	StateSequenceGenerator stateSeqGen(6, {ServiceOK, ServiceWarning, ServiceCritical, ServiceUnknown});
+
+	for (bool isVolatile : {false, true}) {
+		for (int checkAttempts : {1, 2}) {
+			stateSeqGen.reset();
+			while (stateSeqGen) {
+				const std::vector<ServiceState> sequence = stateSeqGen();
+
+				std::string testcase;
+				{
+					std::ostringstream buf;
+					buf << "volatile=" << isVolatile << " checkAttempts=" << checkAttempts << " sequence={";
+					bool first = true;
+					for (ServiceState s: sequence) {
+						if (!first) {
+							buf << " ";
+						}
+						buf << Service::StateToString(s);
+						first = false;
+					}
+					buf << "}";
+					testcase = buf.str();
+				}
+				std::cout << "Test case: " << testcase << std::endl;
+
+				Service::Ptr service = new Service();
+				service->SetActive(true);
+				service->SetVolatile(isVolatile);
+				service->SetMaxCheckAttempts(checkAttempts);
+				service->Activate();
+				service->SetAuthority(true);
+				service->SetStateRaw(sequence.front());
+				service->SetStateType(StateTypeHard);
+				service->SetEnableActiveChecks(false); // TODO: maybe needed due to LikelyToBeCheckedSoon
+				BOOST_CHECK(service->GetState() == sequence.front());
+				BOOST_CHECK(service->GetStateType() == StateTypeHard);
+
+				std::cout << "  Downtime Start" << std::endl;
+				Downtime::Ptr downtime = new Downtime();
+				downtime->SetCheckable(service);
+				downtime->SetFixed(true);
+				downtime->SetStartTime(Utility::GetTime() - 3600);
+				downtime->SetEndTime(Utility::GetTime() + 3600);
+				service->RegisterDowntime(downtime);
+				BOOST_CHECK(service->IsInDowntime());
+
+				bool first = true;
+				for (ServiceState s: sequence) {
+					if (first) {
+						// Don't process check result for initial state as it was set above.
+						first = false;
+						continue;
+					}
+					std::cout << "  ProcessCheckResult(" << Service::StateToString(s) << ")" << std::endl;
+					service->ProcessCheckResult(MakeCheckResult(s));
+					BOOST_CHECK(service->GetState() == s);
+					if (checkAttempts == 1) {
+						BOOST_CHECK(service->GetStateType() == StateTypeHard);
+					}
+				}
+
+				assertNotifications(service, {}, "(no notifications in downtime)");
+
+				BOOST_CHECK(!service->GetSuppressedNotifications() || service->GetStateBeforeSuppression() == sequence.front());
+
+				std::cout << "  Downtime End" << std::endl;
+				service->UnregisterDowntime(downtime);
+				BOOST_CHECK(!service->IsInDowntime());
+
+				std::cout << "  FireSuppressedNotifications()" << std::endl;
+				service->FireSuppressedNotifications();
+
+				if (service->GetStateType() == icinga::StateTypeSoft) {
+					assertNotifications(service, {}, testcase + " (should not fire in soft state)");
+
+					for (int i = 0; i < checkAttempts && service->GetStateType() == StateTypeSoft; i++) {
+						std::cout << "  ProcessCheckResult(" << Service::StateToString(sequence.back()) << ")" << std::endl;
+						service->ProcessCheckResult(MakeCheckResult(sequence.back()));
+						BOOST_CHECK(service->GetState() == sequence.back());
+					}
+
+					std::cout << "  FireSuppressedNotifications()" << std::endl;
+					service->FireSuppressedNotifications();
+				}
+
+				BOOST_CHECK(service->GetStateType() == StateTypeHard);
+
+				if (sequence.front() != sequence.back()) {
+					assertNotifications(service, {
+						{sequence.back() == ServiceOK ? NotificationRecovery : NotificationProblem, sequence.back()}
+					}, testcase);
+				} else {
+					assertNotifications(service, {}, testcase);
+				}
+			}
+		}
+	}
+
+	c.disconnect();
 #endif /* I2_DEBUG */
 }
 BOOST_AUTO_TEST_SUITE_END()

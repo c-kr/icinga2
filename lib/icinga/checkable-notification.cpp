@@ -129,26 +129,26 @@ void Checkable::UnregisterNotification(const Notification::Ptr& notification)
 	m_Notifications.erase(notification);
 }
 
-static void FireSuppressedNotifications(Checkable* checkable)
+void Checkable::FireSuppressedNotifications()
 {
-	if (!checkable->IsActive())
+	if (!IsActive())
 		return;
 
-	if (checkable->IsPaused())
+	if (IsPaused())
 		return;
 
-	if (!checkable->GetEnableNotifications())
+	if (!GetEnableNotifications())
 		return;
 
-	int suppressed_types (checkable->GetSuppressedNotifications());
+	int suppressed_types (GetSuppressedNotifications());
 	if (!suppressed_types)
 		return;
 
 	int subtract = 0;
 
 	{
-		LazyInit<bool> wasLastParentRecoveryRecent ([&checkable]() {
-			auto cr (checkable->GetLastCheckResult());
+		LazyInit<bool> wasLastParentRecoveryRecent ([this]() {
+			auto cr (GetLastCheckResult());
 
 			if (!cr) {
 				return true;
@@ -156,7 +156,7 @@ static void FireSuppressedNotifications(Checkable* checkable)
 
 			auto threshold (cr->GetExecutionStart());
 
-			for (auto& dep : checkable->GetDependencies()) {
+			for (auto& dep : GetDependencies()) {
 				auto parent (dep->GetParent());
 				ObjectLock oLock (parent);
 
@@ -170,7 +170,7 @@ static void FireSuppressedNotifications(Checkable* checkable)
 
 		for (auto type : {NotificationProblem, NotificationRecovery, NotificationFlappingStart, NotificationFlappingEnd}) {
 			if (suppressed_types & type) {
-				if (type & (NotificationProblem|NotificationRecovery) && checkable->GetStateType() != StateTypeHard) {
+				if (type & (NotificationProblem|NotificationRecovery) && GetStateType() != StateTypeHard) {
 					/* If there are suppressed state notifications and the checkable currently is in a soft state,
 					 * wait with sending the notification until a hard state is reached.
 					 *
@@ -185,11 +185,11 @@ static void FireSuppressedNotifications(Checkable* checkable)
 					continue;
 				}
 
-				bool still_applies = checkable->NotificationReasonApplies(type);
+				bool still_applies = NotificationReasonApplies(type);
 
 				if (still_applies) {
-					if (!checkable->NotificationReasonSuppressed(type) && !checkable->IsLikelyToBeCheckedSoon() && !wasLastParentRecoveryRecent.Get()) {
-						Checkable::OnNotificationsRequested(checkable, type, checkable->GetLastCheckResult(), "", "", nullptr);
+					if (!NotificationReasonSuppressed(type) && !IsLikelyToBeCheckedSoon() && !wasLastParentRecoveryRecent.Get()) {
+						Checkable::OnNotificationsRequested(this, type, GetLastCheckResult(), "", "", nullptr);
 
 						subtract |= type;
 					}
@@ -201,13 +201,13 @@ static void FireSuppressedNotifications(Checkable* checkable)
 	}
 
 	if (subtract) {
-		ObjectLock olock (checkable);
+		ObjectLock olock (this);
 
-		int suppressed_types_before (checkable->GetSuppressedNotifications());
+		int suppressed_types_before (GetSuppressedNotifications());
 		int suppressed_types_after (suppressed_types_before & ~subtract);
 
 		if (suppressed_types_after != suppressed_types_before) {
-			checkable->SetSuppressedNotifications(suppressed_types_after);
+			SetSuppressedNotifications(suppressed_types_after);
 		}
 	}
 }
@@ -215,14 +215,14 @@ static void FireSuppressedNotifications(Checkable* checkable)
 /**
  * Re-sends all notifications previously suppressed by e.g. downtimes if the notification reason still applies.
  */
-void Checkable::FireSuppressedNotifications(const Timer * const&)
+void Checkable::FireSuppressedNotificationsTimer(const Timer * const&)
 {
 	for (auto& host : ConfigType::GetObjectsByType<Host>()) {
-		::FireSuppressedNotifications(host.get());
+		host->FireSuppressedNotifications();
 	}
 
 	for (auto& service : ConfigType::GetObjectsByType<Service>()) {
-		::FireSuppressedNotifications(service.get());
+		service->FireSuppressedNotifications();
 	}
 }
 

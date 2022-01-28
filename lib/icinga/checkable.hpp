@@ -18,6 +18,12 @@
 #include <cstdint>
 #include <functional>
 
+#if I2_DEBUG
+namespace icinga_checkresult {
+	struct suppressed_notification;
+}
+#endif
+
 namespace icinga
 {
 
@@ -222,7 +228,7 @@ private:
 
 	static void NotifyDowntimeEnd(const Downtime::Ptr& downtime);
 
-	static void FireSuppressedNotifications(const Timer * const&);
+	static void FireSuppressedNotificationsTimer(const Timer * const&);
 	static void CleanDeadlinedExecutions(const Timer * const&);
 
 	/* Comments */
@@ -232,6 +238,12 @@ private:
 	/* Notifications */
 	std::set<Notification::Ptr> m_Notifications;
 	mutable std::mutex m_NotificationMutex;
+
+	void FireSuppressedNotifications();
+
+#if I2_DEBUG
+	friend struct icinga_checkresult::suppressed_notification;
+#endif
 
 	/* Dependencies */
 	mutable std::mutex m_DependencyMutex;

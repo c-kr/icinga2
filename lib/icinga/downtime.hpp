@@ -8,6 +8,12 @@
 #include "icinga/checkable-ti.hpp"
 #include "remote/messageorigin.hpp"
 
+#if I2_DEBUG
+namespace icinga_checkresult {
+	struct suppressed_notification;
+}
+#endif
+
 namespace icinga
 {
 
@@ -81,6 +87,11 @@ private:
 	mutable std::mutex m_ChildrenMutex;
 
 	bool CanBeTriggered();
+
+#if I2_DEBUG
+	void SetCheckable(const intrusive_ptr<Checkable>& checkable) { m_Checkable = static_pointer_cast<ObjectImpl<Checkable>>(checkable); }
+	friend struct icinga_checkresult::suppressed_notification;
+#endif
 
 	static void DowntimesStartTimerHandler();
 	static void DowntimesExpireTimerHandler();
