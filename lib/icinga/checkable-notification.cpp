@@ -170,6 +170,21 @@ static void FireSuppressedNotifications(Checkable* checkable)
 
 		for (auto type : {NotificationProblem, NotificationRecovery, NotificationFlappingStart, NotificationFlappingEnd}) {
 			if (suppressed_types & type) {
+				if (type & (NotificationProblem|NotificationRecovery) && checkable->GetStateType() != StateTypeHard) {
+					/* If there are suppressed state notifications and the checkable currently is in a soft state,
+					 * wait with sending the notification until a hard state is reached.
+					 *
+					 * Rationale: soft states represent a state where we are not certain yet about the actual state and
+					 * wait with sending notifications. If we want to immediately send a notification, we might send a
+					 * recovery notification for something that just started failing or a problem notification which
+					 * might be for an intermittent problem that would have never received a notification if there was
+					 * no suppression as it still was in a soft state. Both cases aren't ideal so better wait until we
+					 * are certain.
+					 */
+
+					continue;
+				}
+
 				bool still_applies = checkable->NotificationReasonApplies(type);
 
 				if (still_applies) {
@@ -224,12 +239,12 @@ bool Checkable::NotificationReasonApplies(NotificationType type)
 		case NotificationProblem:
 			{
 				auto cr (GetLastCheckResult());
-				return cr && !IsStateOK(cr->GetState()) && GetStateType() == StateTypeHard;
+				return cr && !IsStateOK(cr->GetState()) && cr->GetState() != GetStateBeforeSuppression();
 			}
 		case NotificationRecovery:
 			{
 				auto cr (GetLastCheckResult());
-				return cr && IsStateOK(cr->GetState());
+				return cr && IsStateOK(cr->GetState()) && cr->GetState() != GetStateBeforeSuppression();
 			}
 		case NotificationFlappingStart:
 			return IsFlapping();
