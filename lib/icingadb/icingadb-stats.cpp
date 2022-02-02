@@ -19,6 +19,7 @@ Dictionary::Ptr IcingaDB::GetStats()
 	if (!statsFunctions)
 		Dictionary::Ptr();
 
+	statsFunctions = statsFunctions->ShallowClone();
 	ObjectLock olock(statsFunctions);
 
 	for (auto& kv : statsFunctions)
