@@ -412,13 +412,19 @@ void RedisConnection::ReadLoop(asio::yield_context& yc)
 							} catch (const boost::coroutines::detail::forced_unwind&) {
 								throw;
 							} catch (...) {
-								promise.set_exception(std::current_exception());
+								try {
+									promise.set_exception(std::current_exception());
+								} catch (...) {
+								}
 
 								continue;
 							}
 						}
 
-						promise.set_value(std::move(replies));
+						try {
+							promise.set_value(std::move(replies));
+						} catch (...) {
+						}
 					}
 			}
 		}
