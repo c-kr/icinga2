@@ -2416,6 +2416,10 @@ mysql_health_warningx            | **Optional.** The extended warning thresholds
 mysql_health_criticalx           | **Optional.** The extended critical thresholds depending on the mode.
 mysql_health_mode                | **Required.** The mode uses predefined keywords for the different checks. For example "connection-time", "slave-lag" or "sql".
 mysql_health_method              | **Optional.** How the plugin should connect to the database (`dbi` for using DBD::Mysql (default), `mysql` for using the mysql-Tool).
+mysql_health_ssl                 | **Optional.** Use SSL (set to 1 to enable)
+mysql_health_ssl_ca_file         | **Optional.** Path to CA file
+mysql_health_ssl_client_cert     | **Optional.** Path to Client Cert
+mysql_health_ssl_client_key      | **Optional.** Path to Client Key
 mysql_health_commit              | **Optional.** Turns on autocommit for the dbd::\* module.
 mysql_health_notemp              | **Optional.** Ignore temporary databases/tablespaces.
 mysql_health_nooffline           | **Optional.** Skip the offline databases.
